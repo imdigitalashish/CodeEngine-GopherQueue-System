@@ -1,8 +1,14 @@
 package queue
 
 import (
+	"fmt"
+	"os"
+	"os/exec"
+	"path/filepath"
 	"sync"
 	"time"
+
+	"io/ioutil"
 
 	"github.com/imdigitalashish/QueueSystemsInGolang/internal/model"
 )
@@ -28,15 +34,49 @@ func NewQueue(workers int) *Queue {
 
 func (q *Queue) worker() {
 	for job := range q.jobs {
-		time.Sleep(5 * time.Second)
-		job.Result = "Proccessed: " + job.Content
-		job.Status = "completed"
+		output, err := runPythonCodeInDocker(job.Content)
+		if err != nil {
+			job.Result = "Error: " + err.Error()
+			job.Status = "failed"
+		} else {
+			job.Result = "Output: " + output
+			job.Status = "completed"
+		}
 		job.DoneTime = time.Now()
-
 		q.mutex.Lock()
 		q.results[job.ID] = &job
 		q.mutex.Unlock()
 	}
+}
+
+func runPythonCodeInDocker(code string) (string, error) {
+	// Create a temporary directory
+	tempDir, err := ioutil.TempDir("", "python-code")
+	if err != nil {
+		return "", fmt.Errorf("error creating temp directory: %w", err)
+	}
+	defer os.RemoveAll(tempDir)
+
+	// Create a temporary Python script
+	scriptPath := filepath.Join(tempDir, "code.py")
+	print(scriptPath)
+	if err := ioutil.WriteFile(scriptPath, []byte(code), 0644); err != nil {
+		return "", fmt.Errorf("error writing to temp file: %w", err)
+	}
+
+	// Docker command to run the script
+	cmd := exec.Command("docker", "run", "--rm",
+		"-v", fmt.Sprintf("%s:/app", tempDir),
+		"-w", "/app",
+		"python:3.9-slim",
+		"python", "code.py")
+
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		return "", fmt.Errorf("error running Docker: %w\n%s", err, string(output))
+	}
+
+	return string(output), nil
 }
 
 func (q *Queue) AddJob(content string) string {
