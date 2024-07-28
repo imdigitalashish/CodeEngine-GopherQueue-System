@@ -5,6 +5,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 
@@ -34,7 +35,7 @@ func NewQueue(workers int) *Queue {
 
 func (q *Queue) worker() {
 	for job := range q.jobs {
-		output, err := runPythonCodeInDocker(job.Content)
+		output, err := runCode(job.Language, job.Content)
 		if err != nil {
 			job.Result = "Error: " + err.Error()
 			job.Status = "failed"
@@ -49,28 +50,51 @@ func (q *Queue) worker() {
 	}
 }
 
-func runPythonCodeInDocker(code string) (string, error) {
+func runCode(language, code string) (string, error) {
 	// Create a temporary directory
-	tempDir, err := ioutil.TempDir("", "python-code")
+	tempDir, err := ioutil.TempDir("", "code-execution")
 	if err != nil {
 		return "", fmt.Errorf("error creating temp directory: %w", err)
 	}
 	defer os.RemoveAll(tempDir)
 
-	// Create a temporary Python script
-	scriptPath := filepath.Join(tempDir, "code.py")
-	print(scriptPath)
+	// Define file extensions and Docker images for each language
+	languageConfig := map[string]struct {
+		extension string
+		image     string
+		command   []string
+	}{
+		"js":         {".js", "node:14-alpine", []string{"node"}},
+		"golang":     {".go", "golang:1.16-alpine", []string{"go", "run"}},
+		"python":     {".py", "python:3.9-slim", []string{"python"}},
+		"typescript": {".ts", "node:14-alpine", []string{"npx", "ts-node"}},
+		"c++":        {".cpp", "gcc:latest", []string{"g++", "-o", "program", "code.cpp", "&&", "./program"}},
+		"c":          {".c", "gcc:latest", []string{"gcc", "-o", "program", "code.c", "&&", "./program"}},
+	}
+
+	config, exists := languageConfig[strings.ToLower(language)]
+	if !exists {
+		return "", fmt.Errorf("unsupported language: %s", language)
+	}
+
+	// Create a temporary script file
+	scriptPath := filepath.Join(tempDir, "code"+config.extension)
 	if err := ioutil.WriteFile(scriptPath, []byte(code), 0644); err != nil {
 		return "", fmt.Errorf("error writing to temp file: %w", err)
 	}
 
-	// Docker command to run the script
-	cmd := exec.Command("docker", "run", "--rm",
+	// Prepare Docker command
+	dockerArgs := []string{
+		"run", "--rm",
 		"-v", fmt.Sprintf("%s:/app", tempDir),
 		"-w", "/app",
-		"python:3.9-slim",
-		"python", "code.py")
+		config.image,
+	}
+	dockerArgs = append(dockerArgs, config.command...)
+	dockerArgs = append(dockerArgs, "code"+config.extension)
 
+	// Run Docker command
+	cmd := exec.Command("docker", dockerArgs...)
 	output, err := cmd.CombinedOutput()
 	if err != nil {
 		return "", fmt.Errorf("error running Docker: %w\n%s", err, string(output))
@@ -79,12 +103,13 @@ func runPythonCodeInDocker(code string) (string, error) {
 	return string(output), nil
 }
 
-func (q *Queue) AddJob(content string) string {
+func (q *Queue) AddJob(language string, content string) string {
 	id := generateUniqueID()
 	job := model.Job{
-		ID:      id,
-		Content: content,
-		Status:  "queued",
+		ID:       id,
+		Content:  content,
+		Status:   "queued",
+		Language: language,
 	}
 
 	q.mutex.Lock()

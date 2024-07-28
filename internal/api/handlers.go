@@ -19,12 +19,13 @@ func NewHandler(q *queue.Queue) *Handler {
 
 func (h *Handler) ProcessContent(c *gin.Context) {
 	content := c.PostForm("content")
+	language := c.PostForm("language")
 	if content == "" {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "Content is required"})
 		return
 	}
 
-	id := h.Queue.AddJob(content)
+	id := h.Queue.AddJob(language, content)
 	c.JSON(http.StatusOK, gin.H{"id": id})
 }
 
